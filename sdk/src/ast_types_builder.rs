@@ -147,13 +147,40 @@ impl<'a> ParserCtx<'a> {
 
     #[allow(clippy::unnecessary_debug_formatting)]
     fn parse_file(&mut self, path: &Path) -> Rc<File> {
-        let content = self
-            .file_provider
-            .read(path)
-            .unwrap_or_else(|_| panic!("Failed to parse file at path: {path:?}"));
+        // Patch: read and parse errors used to panic and kill the whole scan.
+        // Emit a warning and return an empty AST so the scanner keeps working
+        // when a file is unreadable or contains syntax the pinned `syn` can't
+        // handle.
+        let content = match self.file_provider.read(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "[soroban-scanner:patched] Skipping unreadable file {path:?}: {e}"
+                );
+                return self.build_file(
+                    path.to_string_lossy().to_string(),
+                    syn::File {
+                        shebang: None,
+                        attrs: Vec::new(),
+                        items: Vec::new(),
+                    },
+                );
+            }
+        };
 
-        let ast_file = syn::parse_file(content.as_str())
-            .unwrap_or_else(|_| panic!("Failed to parse file at path: {path:?}"));
+        let ast_file = match syn::parse_file(content.as_str()) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!(
+                    "[soroban-scanner:patched] Skipping unparseable file {path:?}: {e}"
+                );
+                syn::File {
+                    shebang: None,
+                    attrs: Vec::new(),
+                    items: Vec::new(),
+                }
+            }
+        };
         let ast: Rc<File> = self.build_file(path.to_string_lossy().to_string(), ast_file);
         ast
     }
@@ -251,7 +278,10 @@ impl<'a> ParserCtx<'a> {
             syn::Lit::ByteStr(lit_bstr) => Literal::BString(Rc::new(LBString {
                 id,
                 location,
-                value: String::from_utf8(lit_bstr.value()).expect("Invalid UTF-8 sequence"),
+                // Patch: byte-string literals legitimately contain non-UTF-8 bytes
+                // (e.g. `b"a\xc3\x28d"` in soroban-sdk tests). Use lossy decoding
+                // to keep the scanner alive instead of panicking.
+                value: String::from_utf8_lossy(&lit_bstr.value()).into_owned(),
             })),
             syn::Lit::CStr(lit_cstr) => Literal::CString(Rc::new(LCString {
                 id,
@@ -272,7 +302,13 @@ impl<'a> ParserCtx<'a> {
             syn::Item::Fn(item_fn) => {
                 Definition::Function(self.build_function_from_item_fn(item_fn, None, parent_id))
             }
-            syn::Item::ForeignMod(_) => todo!("Should not appear"),
+            // Patch: reroute `extern "C" { ... }` blocks through the generic
+            // verbatim handler instead of panicking. Scanner has no first-class
+            // representation for foreign modules, but vendored FFI crates use
+            // them freely (e.g. `vendor/cvlr`).
+            syn::Item::ForeignMod(item_foreign_mod) => {
+                self.build_plane_definition(&item_foreign_mod.to_token_stream(), parent_id)
+            }
             syn::Item::Impl(item_impl) => self.process_item_impl(item_impl, parent_id),
             syn::Item::Macro(item_macro) => self.build_macro_definition(item_macro, parent_id),
             syn::Item::Mod(item_mod) => self.build_mod_definition(item_mod, parent_id),
