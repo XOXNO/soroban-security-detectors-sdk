@@ -16,6 +16,23 @@ use std::{collections::HashMap, path::PathBuf};
 mod parser;
 
 fn main() {
+    // Patch: the scanner's symbol resolver and AST walker recurse deeply
+    // enough that the 8 MiB default main-thread stack on macOS/Linux
+    // intermittently overflows on real workspaces (non-deterministic because
+    // HashMap iteration drives the traversal order). Running the whole CLI
+    // in a worker thread with a 128 MiB stack removes the flake without
+    // pretending to fix the underlying recursion in upstream.
+    let handle = std::thread::Builder::new()
+        .name("soroban-scanner-main".into())
+        .stack_size(1024 * 1024 * 1024)
+        .spawn(run)
+        .expect("failed to spawn scanner worker thread");
+    if handle.join().is_err() {
+        std::process::exit(1);
+    }
+}
+
+fn run() {
     let args = Cli::parse();
 
     match args.command {
@@ -33,6 +50,19 @@ fn main() {
                 }
                 let s = path.to_string_lossy();
                 exclude_patterns.iter().any(|pat| s.contains(pat.as_str()))
+            };
+
+            // Patch: canonicalize corpus keys so downstream `file_provider.read`
+            // lookups match. The symbol resolver calls `canonicalize` during
+            // module resolution; keeping corpus keys relative caused
+            // intermittent "File not found" warnings and, worse, fed the
+            // resolver into unbounded fallback paths that stack-overflowed
+            // on real workspaces.
+            let canonical_key = |p: &std::path::Path| -> String {
+                p.canonicalize()
+                    .unwrap_or_else(|_| p.to_path_buf())
+                    .to_string_lossy()
+                    .into_owned()
             };
 
             let mut corpus = HashMap::new();
@@ -53,7 +83,7 @@ fn main() {
                                 stack.push(p);
                             } else if p.is_file() && p.extension().unwrap_or_default() == "rs" {
                                 let file_content = std::fs::read_to_string(&p).unwrap();
-                                corpus.insert(p.to_string_lossy().to_string(), file_content);
+                                corpus.insert(canonical_key(&p), file_content);
                             }
                         }
                     }
@@ -62,7 +92,7 @@ fn main() {
                         continue;
                     }
                     let file_content = std::fs::read_to_string(path).unwrap();
-                    corpus.insert(path.to_string_lossy().to_string(), file_content);
+                    corpus.insert(canonical_key(path), file_content);
                 }
             }
             let mut files_scanned = Vec::new();
