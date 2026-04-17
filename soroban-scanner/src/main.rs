@@ -24,15 +24,31 @@ fn main() {
             detectors,
             project_root,
             load_lib,
+            exclude,
         } => {
+            let exclude_patterns: Vec<String> = exclude.unwrap_or_default();
+            let is_excluded = |path: &std::path::Path| -> bool {
+                if exclude_patterns.is_empty() {
+                    return false;
+                }
+                let s = path.to_string_lossy();
+                exclude_patterns.iter().any(|pat| s.contains(pat.as_str()))
+            };
+
             let mut corpus = HashMap::new();
             for path in &code {
+                if is_excluded(path) {
+                    continue;
+                }
                 if path.is_dir() {
                     let mut stack = vec![path.clone()];
                     while let Some(current_path) = stack.pop() {
                         for entry in std::fs::read_dir(current_path).unwrap() {
                             let entry = entry.unwrap();
                             let p = entry.path();
+                            if is_excluded(&p) {
+                                continue;
+                            }
                             if p.is_dir() {
                                 stack.push(p);
                             } else if p.is_file() && p.extension().unwrap_or_default() == "rs" {

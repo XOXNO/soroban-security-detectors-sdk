@@ -14,6 +14,12 @@ pub(crate) enum Commands {
         project_root: Option<std::path::PathBuf>,
         #[arg(long = "load", required = false, value_parser)]
         load_lib: Option<std::path::PathBuf>,
+        /// Skip any file whose canonical path contains one of the given
+        /// substrings. Repeatable. Matches the walker's raw path separators
+        /// (`/` on unix, `\\` on windows), so prefer simple fragments like
+        /// `vendor/` or `target/`.
+        #[arg(long = "exclude", required = false, value_parser, num_args = 1..)]
+        exclude: Option<Vec<String>>,
     },
     Metadata,
 }
