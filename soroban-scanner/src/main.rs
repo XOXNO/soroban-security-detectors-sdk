@@ -24,7 +24,7 @@ fn main() {
     // pretending to fix the underlying recursion in upstream.
     let handle = std::thread::Builder::new()
         .name("soroban-scanner-main".into())
-        .stack_size(1024 * 1024 * 1024)
+        .stack_size(4 * 1024 * 1024 * 1024)
         .spawn(run)
         .expect("failed to spawn scanner worker thread");
     if handle.join().is_err() {
